@@ -1,6 +1,7 @@
 import { calculate, DEFAULTS } from './model.js';
 const $ = id => document.getElementById(id);
 const KEY = 'geo02-inquiry-v1';
+let tidal3d = null, viewMode = '2d', loading3d = false, failed3d = false;
 const escapeHTML = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let records = [], choice = '', inputs = { ...DEFAULTS }, storageAvailable = true;
 const concepts = [
@@ -39,6 +40,7 @@ function restore() {
 }
 function draw() {
   const m = calculate(inputs);
+  if(tidal3d) tidal3d.update(inputs, m);
   for (const key of Object.keys(DEFAULTS)) { $(key).value = inputs[key]; $(`${key}-value`).textContent = inputs[key] + (key === 'area' ? '%' : ''); }
   $('metrics').innerHTML = [['habitat','서식 기반'],['birds','철새 쉼터'],['purification','정화 잠재력']].map(([key,label]) => `<div class="metric"><span>${label}</span><strong>${m[key]}<small>/ 100</small></strong><div class="bar"><i style="width:${m[key]}%"></i></div></div>`).join('');
   const y = 295 - inputs.area * 1.15;
@@ -88,3 +90,51 @@ function exportPDF(){save();buildReport();document.body.classList.add('pdf-mode'
 $('pdf-top').addEventListener('click',exportPDF);$('pdf-report').addEventListener('click',exportPDF);
 window.addEventListener('beforeprint',buildReport);
 restore();draw();renderRecords();choices();
+
+// Load the local 3D renderer only when requested. The 2D workflow stays available
+// when WebGL is unavailable or a renderer cannot be loaded.
+function setView(mode) {
+  viewMode=mode;
+  $('scene').toggleAttribute('hidden',mode==='3d');
+  $('scene-3d-panel').hidden=mode!=='3d';
+  for(const name of ['2d','3d']) {
+    $(`view-${name}`).classList.toggle('selected',mode===name);
+    $(`view-${name}`).setAttribute('aria-pressed',String(mode===name));
+  }
+  if(mode==='2d') $('view-status').textContent=failed3d ? '3D를 사용할 수 없어 2D로 표시합니다.' : '평면으로 관찰하기';
+  else $('view-status').textContent=tidal3d ? '입체로 관찰하기 · 학습용 모형' : '3D 모형을 준비하고 있어요…';
+}
+$('view-2d').addEventListener('click',()=>setView('2d'));
+$('view-3d').addEventListener('click',async()=>{
+  setView('3d');
+  if(tidal3d || loading3d)return;
+  loading3d=true;
+  try {
+    const { createTidalScene }=await import('./scene3d.js');
+    tidal3d=createTidalScene($('scene-3d'));
+    tidal3d.update(inputs,calculate(inputs));
+    failed3d=false;
+    if(viewMode==='3d')setView('3d');
+    tidal3dCanvasEvents();
+  } catch {
+    failed3d=true;
+    $('scene-3d').replaceChildren();
+    setView('2d');
+    $('view-status').textContent='3D를 사용할 수 없어요. 2D로 계속 탐구하거나 다른 브라우저에서 시도해 주세요.';
+  } finally {loading3d=false;}
+});
+function tidal3dCanvasEvents() {
+  $('scene-3d').querySelector('canvas').addEventListener('webglcontextlost',e=>{
+    e.preventDefault();
+    failed3d=true;
+    setView('2d');
+    $('view-status').textContent='3D 그래픽 연결이 중단되어 2D로 돌아왔어요. 새로고침하면 다시 시도할 수 있습니다.';
+    $('view-3d').disabled=true;
+  });
+}
+for(const [id,action] of Object.entries({
+  'camera-left':()=>tidal3d?.orbit(-.2), 'camera-right':()=>tidal3d?.orbit(.2),
+  'camera-up':()=>tidal3d?.orbit(0,-.15), 'camera-down':()=>tidal3d?.orbit(0,.15),
+  'camera-in':()=>tidal3d?.zoom(.85), 'camera-out':()=>tidal3d?.zoom(1.18),
+  'camera-reset':()=>tidal3d?.resetCamera()
+})) $(id).addEventListener('click',action);
